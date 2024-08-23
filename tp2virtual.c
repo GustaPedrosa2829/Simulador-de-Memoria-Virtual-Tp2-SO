@@ -230,12 +230,9 @@ int main(int argc, char *argv[]) {
     printf("Técnica de reposição: %s\n", algoritmo);
     printf("Número de páginas: %i\n", numeroPaginas);
     printf("Operações no arquivo de entrada: %i\n", operacoes);
-    printf("Operações de leitura: %i\n", leituras);
-    printf("Operações de escrita: %i\n", escritas);
-    printf("Page hits: %i\n", acertos);
-    printf("Page misses: %i\n", faltas);
-    printf("Número de writebacks: %i\n", writebacks);
-    printf("Taxa de page fault: %f%% \n", taxaFaltas/escritas*100);
+    printf("Paginas lidas: %i\n", leituras);
+    printf("Paginas escritas: %i\n", escritas);
+  
 
     liberarMemoria();
 
