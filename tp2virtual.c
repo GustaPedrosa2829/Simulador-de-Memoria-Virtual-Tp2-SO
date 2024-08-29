@@ -3,238 +3,233 @@
 #include <string.h>
 #include <stdbool.h>
 
-// Estrutura da Página
-struct Pagina {
-    char endereco[9];
-    bool referencia;
-    bool modificada;
-    struct Pagina *proxima;
-};
+// Estruturas de dados para simular as páginas e a tabela de páginas
+typedef struct Page {
+    unsigned int frameNumber; // Número do quadro físico
+    bool referenced;         // Bit de referência
+    bool modified;           // Bit modificado (sujo)
+    struct Page* next;       // Ponteiro para a próxima página na lista
+} Page;
 
 // Variáveis globais
-char *algoritmo, *caminhoArquivo, linha[20], enderecoTmp[9];
-int tamanhoPagina, tamanhoMemoria, numeroPaginas, operacoes=0, leituras=0, escritas=0, acertos=0, faltas=0, writebacks=0, paginasUsadas=0;
-float taxaFaltas=0;
-FILE *arquivo;
-struct Pagina *primeiraPagina, *ultimaPagina;
+Page *pageList = NULL; // Lista de páginas na memória
+unsigned int pageSize; // Tamanho da página em KB
+unsigned int memorySize; // Tamanho total da memória em KB
+unsigned int numPages; // Número total de páginas na memória
+unsigned int pageFaults = 0; // Contador de page faults
+unsigned int writebacks = 0; // Contador de páginas sujas escritas de volta
+unsigned int totalAccesses = 0; // Contador de acessos totais
+unsigned int pageHits = 0; // Contador de acertos de página
 
-// Função para inserir uma nova página
-void inserirPagina(char endereco[9], bool modificada) {
-    struct Pagina *novaPagina = (struct Pagina*)malloc(sizeof(struct Pagina));
-    strcpy(novaPagina->endereco, endereco);
-    novaPagina->referencia = true;  // Nova página tem o bit de referência como true
-    novaPagina->modificada = modificada;
-    novaPagina->proxima = NULL;
-    
-    if (paginasUsadas == 0) {
-        primeiraPagina = novaPagina;
-        ultimaPagina = novaPagina;
-    } else {
-        ultimaPagina->proxima = novaPagina;
-        ultimaPagina = novaPagina;
-    }
-    
-    if (paginasUsadas < numeroPaginas)
-        paginasUsadas++;
-    
-    escritas++;
+// Função para determinar o número da página a partir do endereço
+unsigned int getPageNumber(unsigned int address) {
+    return address >> (31 - __builtin_clz(pageSize * 1024 - 1)); // Calcula o número da página
 }
 
-// Algoritmo LRU (Least Recently Used)
-void LRU(char endereco[9]) {
-    struct Pagina *temp = primeiraPagina, *paginaAnterior = NULL;
-
-    // Percorre até o penúltimo elemento da lista
-    while (temp->proxima != NULL) {
-        paginaAnterior = temp;
-        temp = temp->proxima;
-    }
-
-    // Se apenas uma página estiver presente
-    if (paginaAnterior == NULL) {
-        strcpy(temp->endereco, endereco);
-        temp->referencia = true;
-        temp->modificada = (linha[9] == 'W' || linha[9] == 'w');
-    } else {
-        // Substitui a última página
-        if (temp == ultimaPagina) {
-            ultimaPagina = paginaAnterior;
+// Função para encontrar uma página na lista de páginas
+Page* findPage(unsigned int pageNumber) {
+    Page *current = pageList;
+    while (current != NULL) {
+        if (current->frameNumber == pageNumber) {
+            return current;
         }
-        ultimaPagina->proxima = NULL;
-
-        // Mover página para o início
-        temp->proxima = primeiraPagina;
-        primeiraPagina = temp;
-
-        strcpy(temp->endereco, endereco);
-        temp->referencia = true;
-        temp->modificada = (linha[9] == 'W' || linha[9] == 'w');
+        current = current->next;
     }
+    return NULL;
 }
 
-// Algoritmo NRU (Not Recently Used)
-void NRU() {
-    struct Pagina *temp = primeiraPagina, *paginaSubstituir = NULL;
-    int classe = 4;  // Inicializa com uma classe inválida
-
-    while (temp != NULL) {
-        int classeAtual = temp->referencia * 2 + temp->modificada;
-        if (classeAtual < classe) {
-            classe = classeAtual;
-            paginaSubstituir = temp;
-        }
-        temp = temp->proxima;
-    }
-
-    if (paginaSubstituir != NULL) {
-        strcpy(paginaSubstituir->endereco, enderecoTmp);
-        paginaSubstituir->referencia = true;
-        paginaSubstituir->modificada = (linha[9] == 'W' || linha[9] == 'w');
-    }
+// Função para adicionar uma nova página na lista
+void addPage(unsigned int pageNumber, bool modified) {
+    Page *newPage = (Page*)malloc(sizeof(Page));
+    newPage->frameNumber = pageNumber;
+    newPage->referenced = true;
+    newPage->modified = modified;
+    newPage->next = pageList;
+    pageList = newPage;
 }
 
-// Algoritmo Segunda Chance
-void segundaChance() {
-    while (primeiraPagina != NULL) {
-        if (primeiraPagina->referencia == 0) {
-            // Substituir a página
-            struct Pagina *paginaSubstituir = primeiraPagina;
-            strcpy(paginaSubstituir->endereco, enderecoTmp);
-            paginaSubstituir->referencia = true;
-            paginaSubstituir->modificada = (linha[9] == 'W' || linha[9] == 'w');
+// Função para substituir uma página usando LRU (Least Recently Used)
+void replacePageLRU(unsigned int pageNumber, bool modified) {
+    Page *current = pageList;
+    Page *previous = NULL;
+    Page *lruPage = pageList;
+    Page *lruPrev = NULL;
+
+    // Encontrar a página LRU (Menos Recentemente Usada)
+    while (current != NULL) {
+        if (current->referenced == 0) {
+            lruPage = current;
+            lruPrev = previous;
             break;
-        } else {
-            // Dar uma segunda chance e mover para o fim da fila
-            primeiraPagina->referencia = 0;
-            ultimaPagina->proxima = primeiraPagina;
-            ultimaPagina = primeiraPagina;
-            primeiraPagina = primeiraPagina->proxima;
-            ultimaPagina->proxima = NULL;
         }
+        previous = current;
+        current = current->next;
     }
-}
 
-// Função para encontrar uma página e, se necessário, movê-la
-bool encontrarPagina(char endereco[9]) {
-    struct Pagina *temp = primeiraPagina, *paginaAnterior = NULL;
-    while (temp != NULL) {
-        if (strcmp(temp->endereco, endereco) == 0) {
-            temp->referencia = true;  // Atualiza o bit de referência
-
-            // Movendo para o final (simulando o LRU)
-            if (strcmp(algoritmo, "lru") == 0) {
-                if (paginaAnterior != NULL) {
-                    paginaAnterior->proxima = temp->proxima;
-                    ultimaPagina->proxima = temp;
-                    ultimaPagina = temp;
-                    temp->proxima = NULL;
-                }
-            }
-            return true;
-        }
-        paginaAnterior = temp;
-        temp = temp->proxima;
-    }
-    return false;
-}
-
-// Função para substituir uma página com base no algoritmo escolhido
-void substituirPagina(char endereco[9]) {
-    if (strcmp(algoritmo, "lru") == 0) {
-        LRU(endereco);
-    } else if (strcmp(algoritmo, "nru") == 0) {
-        NRU();
-    } else if (strcmp(algoritmo, "segundaChance") == 0) {
-        segundaChance();
-    }
-    writebacks++;
-}
-
-// Função para processar uma escrita de endereço
-void escreverEndereco(char endereco[9]) {
-    if (paginasUsadas < numeroPaginas) {
-        inserirPagina(enderecoTmp, (linha[9] == 'W' || linha[9] == 'w'));
+    if (lruPage == pageList) {
+        // Substituição na cabeça da lista
+        pageList = pageList->next;
     } else {
-        taxaFaltas++;
-        substituirPagina(enderecoTmp);
+        lruPrev->next = lruPage->next;
     }
+    
+    // Verificar se a página substituída foi modificada
+    if (lruPage->modified) {
+        writebacks++;
+    }
+    
+    // Adicionar a nova página
+    lruPage->frameNumber = pageNumber;
+    lruPage->referenced = true;
+    lruPage->modified = modified;
+    lruPage->next = pageList;
+    pageList = lruPage;
 }
 
-// Função para liberar a memória alocada para as páginas
-void liberarMemoria() {
-    struct Pagina *temp = primeiraPagina;
-    while (temp != NULL) {
-        struct Pagina *proxima = temp->proxima;
-        free(temp);
-        temp = proxima;
-    }
-    fclose(arquivo);
-}
+// Função para substituir uma página usando Segunda Chance
+void replacePageSecondChance(unsigned int pageNumber, bool modified) {
+    Page *current = pageList;
+    Page *previous = NULL;
 
-int main(int argc, char *argv[]) {
-    algoritmo = argv[1];
-    caminhoArquivo = argv[2];
-    tamanhoPagina = atoi(argv[3]);
-    tamanhoMemoria = atoi(argv[4]);
-
-    if (tamanhoPagina < 2 || tamanhoPagina > 64) {
-        printf("ERRO: O tamanho de cada página deve estar entre 2 e 64 KB.\n");
-        return 0;
-    }
-
-    if (tamanhoMemoria < 128 || tamanhoMemoria > 16384) {
-        printf("ERRO: O tamanho da memória deve estar entre 128 e 16384 KB.\n");
-        return 0;
-    }
-
-    if (strcmp(algoritmo, "lru") != 0 && strcmp(algoritmo, "nru") != 0 && strcmp(algoritmo, "segundaChance") != 0) {
-        printf("ERRO: O algoritmo deve ser lru, nru ou segundaChance.\n");
-        return 0;
-    }
-
-    numeroPaginas = tamanhoMemoria / tamanhoPagina;
-
-    if (strlen(caminhoArquivo) > 0) {
-        arquivo = fopen(caminhoArquivo, "r");
-        if (arquivo == NULL) {
-            printf("ERRO: Não foi possível abrir o arquivo.\n");
-            return 0;
-        }
-        while (fgets(linha, 20, arquivo) != NULL) {
-            operacoes++;
-            strncpy(enderecoTmp, linha, 8);
-            enderecoTmp[8] = '\0';
-            if (linha[9] == 'W' || linha[9] == 'w') {
-                escreverEndereco(enderecoTmp);
-            } else if (linha[9] == 'R' || linha[9] == 'r') {
-                if (encontrarPagina(enderecoTmp)) {
-                    acertos++;
-                } else {
-                    faltas++;
-                    escreverEndereco(enderecoTmp);
-                }
-                leituras++;
+    while (current != NULL) {
+        if (current->referenced == 0) {
+            // Substituir a página
+            if (previous != NULL) {
+                previous->next = current->next;
             } else {
-                printf("ERRO: Os dados do arquivo de entrada estão em formato incorreto.\n");
-                return 0;
+                pageList = current->next;
+            }
+
+            if (current->modified) {
+                writebacks++;
+            }
+            
+            // Adicionar nova página
+            current->frameNumber = pageNumber;
+            current->referenced = true;
+            current->modified = modified;
+            current->next = pageList;
+            pageList = current;
+            return;
+        } else {
+            current->referenced = 0; // Dar segunda chance
+        }
+        previous = current;
+        current = current->next;
+    }
+}
+
+// Função para substituir uma página usando NRU (Not Recently Used)
+void replacePageNRU(unsigned int pageNumber, bool modified) {
+    Page *current = pageList;
+    Page *previous = NULL;
+    Page *nruPage = NULL;
+    Page *nruPrev = NULL;
+
+    while (current != NULL) {
+        if (current->referenced == 0) {
+            if (nruPage == NULL || (current->modified < nruPage->modified)) {
+                nruPage = current;
+                nruPrev = previous;
             }
         }
-    } else {
-        printf("ERRO: Arquivo de entrada inválido.\n");
-        return 0;
+        previous = current;
+        current = current->next;
     }
+
+    if (nruPage != NULL) {
+        if (nruPrev != NULL) {
+            nruPrev->next = nruPage->next;
+        } else {
+            pageList = nruPage->next;
+        }
+
+        if (nruPage->modified) {
+            writebacks++;
+        }
+        
+        // Adicionar nova página
+        nruPage->frameNumber = pageNumber;
+        nruPage->referenced = true;
+        nruPage->modified = modified;
+        nruPage->next = pageList;
+        pageList = nruPage;
+    }
+}
+
+// Função para processar uma linha de acesso
+void processAccess(unsigned int address, char accessType, char *algorithm) {
+    unsigned int pageNumber = getPageNumber(address);
+    bool modified = (accessType == 'W');
+
+    Page *page = findPage(pageNumber);
+    if (page != NULL) {
+        pageHits++;
+        page->referenced = true;
+        if (strcmp(algorithm, "lru") == 0) {
+            // Mover a página para o início da lista (se necessário)
+        }
+    } else {
+        pageFaults++;
+        if (pageList != NULL && numPages > 0) {
+            if (strcmp(algorithm, "lru") == 0) {
+                replacePageLRU(pageNumber, modified);
+            } else if (strcmp(algorithm, "segundaChance") == 0) {
+                replacePageSecondChance(pageNumber, modified);
+            } else if (strcmp(algorithm, "nru") == 0) {
+                replacePageNRU(pageNumber, modified);
+            }
+        } else {
+            // Adicionar a nova página
+            addPage(pageNumber, modified);
+        }
+    }
+}
+
+
+// Função principal
+int main(int argc, char *argv[]) {
+    if (argc != 5) {
+        printf("Uso: %s <algoritmo> <arquivo> <tamanho_pagina> <tamanho_memoria>\n", argv[0]);
+        return 1;
+    }
+
+    char *algorithm = argv[1];
+    char *fileName = argv[2];
+    pageSize = atoi(argv[3]);
+    memorySize = atoi(argv[4]);
+
+    numPages = memorySize / pageSize;
+    FILE *file = fopen(fileName, "r");
+    if (file == NULL) {
+        perror("Erro ao abrir o arquivo");
+        return 1;
+    }
+
+    unsigned int address;
+    char accessType;
+    while (fscanf(file, "%x %c", &address, &accessType) == 2) {
+        totalAccesses++;
+        processAccess(address, accessType,algorithm);
+    }
+
+    fclose(file);
 
     printf("\nExecutando o simulador...\n");
-    printf("Tamanho da memória: %iKB\n", tamanhoMemoria);
-    printf("Tamanho das páginas: %iKB\n", tamanhoPagina);
-    printf("Técnica de reposição: %s\n", algoritmo);
-    printf("Número de páginas: %i\n", numeroPaginas);
-    printf("Operações no arquivo de entrada: %i\n", operacoes);
-    printf("Paginas lidas: %i\n", leituras);
-    printf("Paginas escritas: %i\n", escritas);
-  
+    printf("Arquivo de entrada: %s\n", fileName);
+    printf("Tamanho da memória: %d KB\n", memorySize);
+    printf("Tamanho das páginas: %d KB\n", pageSize);
+    printf("Técnica de reposição: %s\n", algorithm);
+    printf("Número total de acessos: %d\n", totalAccesses);
+    printf("Número de page faults: %d\n", pageFaults);
+    printf("Número de writebacks: %d\n", writebacks);
 
-    liberarMemoria();
+    // Liberar memória
+    while (pageList != NULL) {
+        Page *temp = pageList;
+        pageList = pageList->next;
+        free(temp);
+    }
 
     return 0;
 }
